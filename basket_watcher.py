@@ -1,52 +1,60 @@
 import ccxt, pandas as pd, urllib.request
-from datetime import datetime
+from datetime import datetime, timezone
+
+now = datetime.now(timezone.utc)
+wd, hr = now.weekday(), now.hour
+print(f"[{now.strftime('%Y-%m-%d %H:%M UTC')}] Checking...")
+if (wd == 5) or (wd == 4 and hr >= 22) or (wd == 6 and hr < 22):
+    print("WEEKEND LOCK ACTIVE: Forex is closed. Sleeping.")
+    exit()
 
 ex = ccxt.kraken()
 pairs = ['EUR/USD', 'GBP/USD', 'USD/CAD', 'USD/JPY']
-NTFY_TOPIC = "cozie-btc-alerts"
+NTFY = "cozie-btc-alerts"
+def count_losses(df):
+    c = 0
+    for i in range(30, len(df) - 2):
+        if df['z'].iloc[i-1] < -2.1 and df['z'].iloc[i] >= -2.1:
+            sp = df['c'].iloc[i] - (df['atr'].iloc[i] * 1.5)
+            tp = df['m'].iloc[i]
+            for k in range(i + 1, min(i + 9, len(df))):
+                if df['l'].iloc[k] <= sp: c += 1; break
+                if df['h'].iloc[k] >= tp: break
+    return c
+def calc_lot(p, cp, sl):
+    d = abs(cp - sl)
+    rl = (d * 100000) / cp if p.startswith('USD') else (d * 100000)
+    return max(0.01, min(round(250.0 / rl, 2), 5.0)) if rl > 0 else 0.1
+def check_pair(p):
+    b = ex.fetch_ohlcv(p, '1h', limit=60)
+    df = pd.DataFrame(b, columns=['t','o','h','l','c','v'])
+    df['m'] = df['c'].rolling(30).mean()
+    df['s'] = df['c'].rolling(30).std()
+    df['z'] = (df['c'] - df['m']) / df['s']
+    df['atr'] = (df['h'] - df['l']).rolling(14).mean()
+    loss = count_losses(df)
+    pz, cz = round(df['z'].iloc[-2], 2), round(df['z'].iloc[-1], 2)
+    if pz < -2.1 and cz >= -2.1:
+        cp, dec = df['c'].iloc[-1], (3 if 'JPY' in p else 5)
+        tp = round(df['m'].iloc[-1], dec)
+        sl = round(cp - (df['atr'].iloc[-1] * 1.5), dec)
+        lot = calc_lot(p, cp, sl)
+        return loss, f"9694 GORILLA [{p}]: BUY @ {cp} | LOT: {lot} | SL: {sl} | TP: {tp}"
+    print(f"  {p:7} | Prev Z: {pz:5.2f} -> Curr Z: {cz:5.2f} | Standby")
+    return loss, None
+losses, alerts = 0, []
+for p in pairs:
+    try:
+        lc, sig = check_pair(p)
+        losses += lc
+        if sig: alerts.append(sig)
+    except Exception as e:
+        print(f"  {p:7} | Feed warning: {e}")
 
-def log(msg):
-    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
-    print(f"[{now}] {msg}")
-
-def scan_basket():
-    log("=== LIVE SCAN: 9694 BASKET ENGINE (EUR/USD, GBP/USD, USD/CAD, USD/JPY) ===")
-    
-    for p in pairs:
-        try:
-            bars = ex.fetch_ohlcv(p, '1h', limit=50)
-            df = pd.DataFrame(bars, columns=['t','o','h','l','close','v'])
-            
-            # Exact Math from basket_audit.py ($9,694 test)
-            df['mean'] = df['close'].rolling(30).mean()
-            df['std'] = df['close'].rolling(30).std()
-            df['z'] = (df['close'] - df['mean']) / df['std']
-            df['atr'] = (df['h'] - df['l']).rolling(14).mean()
-            
-            curr_price = df['close'].iloc[-1]
-            prev_z = round(df['z'].iloc[-2], 2)
-            curr_z = round(df['z'].iloc[-1], 2)
-            
-            # The -2.1 Sigma Hook Trigger
-            if prev_z < -2.1 and curr_z >= -2.1:
-                tp = round(df['mean'].iloc[-1], 5)
-                sl = round(curr_price - (df['atr'].iloc[-1] * 1.5), 5)
-                
-                # Risk formula: 0.5% risk ($250) on $50,000 account
-                risk_distance = abs(curr_price - sl)
-                lot_size = round(250.00 / (risk_distance * 100000), 2) if risk_distance > 0 else 0.1
-                
-                alert_msg = f"9694 GORILLA SIGNAL [{p}]: BUY @ {curr_price} | LOT: {lot_size} | SL: {sl} | TP: {tp}"
-                log(f"*** TRIGGER DETECTED: {alert_msg} ***")
-                
-                # Push directly to your phone via ntfy
-                urllib.request.urlopen(f"https://ntfy.sh/{NTFY_TOPIC}", data=alert_msg.encode('utf-8'))
-            else:
-                log(f"  {p:7} | Prev Z: {prev_z:5.2f} -> Curr Z: {curr_z:5.2f} | Status: Standby")
-        except Exception as e:
-            log(f"  {p:7} | Feed sync error: {str(e)}")
-
-    log("=== SCAN COMPLETE: Standing by for next hourly candle ===")
-
-if __name__ == "__main__":
-    scan_basket()
+if losses >= 3:
+    print(f"CIRCUIT BREAKER TRIPPED ({losses} losses). Locked.")
+else:
+    print(f"Circuit Breaker Safe ({losses}/3 recent losses).")
+    for m in alerts:
+        print(f"*** SENDING: {m} ***")
+        urllib.request.urlopen(f"https://ntfy.sh/{NTFY}", data=m.encode('utf-8'))
