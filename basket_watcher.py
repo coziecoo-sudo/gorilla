@@ -4,9 +4,8 @@ from datetime import datetime, timezone
 now = datetime.now(timezone.utc)
 wd, hr = now.weekday(), now.hour
 
-print(f"[{now.strftime('%Y-%m-%d %H:%M UTC')}] Gorilla Basket Scanner Active...")
+print(f"[{now.strftime('%Y-%m-%d %H:%M UTC')}] Gorilla Scanner Active...")
 
-# Weekend Lock: Friday 22:00 UTC to Sunday 22:00 UTC
 if (wd == 5) or (wd == 4 and hr >= 22) or (wd == 6 and hr < 22):
     print("WEEKEND LOCK ACTIVE: Forex is closed. Sleeping.")
     exit()
@@ -27,12 +26,16 @@ for p in pairs:
         pz = round(df['z'].iloc[-2], 2)
         cz = round(df['z'].iloc[-1], 2)
 
-        # The Exact 9694 Hook Trigger: Crossed below -2.1 and curling back up
+        # 9694 Hook Trigger
         if pz < -2.1 and cz >= -2.1:
             cp = df['close'].iloc[-1]
             dec = 3 if 'JPY' in p else 5
-            tp = round(df['m'].iloc[-1], dec)
-            sl = round(cp - (df['atr'].iloc[-1] * 1.5), dec)
+            atr = df['atr'].iloc[-1]
+            
+            # FIXED TARGETS: TP is strictly ABOVE entry (1.5x ATR), SL is BELOW entry (1.5x ATR)
+            tp = round(cp + (atr * 1.5), dec)
+            sl = round(cp - (atr * 1.5), dec)
+            
             dist = abs(cp - sl)
             rl = (dist * 100000) / cp if p.startswith('USD') else (dist * 100000)
             lot = max(0.01, min(round(250.0 / rl, 2), 5.0)) if rl > 0 else 0.1
@@ -45,4 +48,4 @@ for p in pairs:
     except Exception as e:
         print(f"  {p:7} | Feed warning: {e}")
 
-print("=== SCAN COMPLETE: Radar fully operational ===")
+print("=== SCAN COMPLETE ===")
